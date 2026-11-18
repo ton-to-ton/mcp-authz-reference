@@ -1,0 +1,54 @@
+name: mcp-authz-reference
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin-test-only}
+      # Issuer seen by browsers and written into tokens...
+      KC_HOSTNAME: http://localhost:8080
+      # ...while other containers may call Keycloak as keycloak:8080 (backchannel endpoints follow the request host).
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: 'true'
+      KC_HEALTH_ENABLED: 'true'
+    volumes:
+      - ./keycloak/itsm-lab-realm.json:/opt/keycloak/data/import/itsm-lab-realm.json:ro
+    ports:
+      - '8080:8080'
+    healthcheck:
+      # The image has no curl; speak HTTP to the management port (9000) with bash's /dev/tcp.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"status": "UP"' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  itsm-mcp:
+    build: .
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    environment:
+      ISSUER: http://localhost:8080/realms/itsm-lab
+      RESOURCE_URL: http://localhost:3000/mcp
+      # Inside the compose network Keycloak is keycloak:8080; the issuer above is what tokens carry.
+      JWKS_URI: http://keycloak:8080/realms/itsm-lab/protocol/openid-connect/certs
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/.well-known/oauth-protected-resource/mcp')
+          .then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))
+      interval: 3s
+      timeout: 3s
+      retries: 20
