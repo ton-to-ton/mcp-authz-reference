@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { decodeJwt } from 'jose';
 import { describe, expect, it } from 'vitest';
 import { getToken } from './token.js';
@@ -8,6 +9,11 @@ const BASE_URL = 'http://localhost:3000';
 const PROTOCOL_VERSION = '2025-11-25';
 
 type ToolResult = { isError?: boolean; content: { type: string; text: string }[] };
+type Ticket = {
+  id: string;
+  status: 'open' | 'closed';
+  comments: { author: string; text: string }[];
+};
 
 // The server is stateless, so every call is an independent POST with its own headers.
 async function rpc(token: string, method: string, params?: object): Promise<Response> {
@@ -37,9 +43,25 @@ async function toolNames(token: string): Promise<string[]> {
 const callTool = async (token: string, name: string, args: object): Promise<ToolResult> =>
   resultOf<ToolResult>(await rpc(token, 'tools/call', { name, arguments: args }));
 
-// The in-memory store lives as long as the itsm-mcp container, so the tests that change tickets
-// use distinct ones (INC-0002 is closed, INC-0003 is commented on) and assert what must hold on
-// a re-run against the same stack too.
+const getTicket = async (token: string, id: string): Promise<Ticket> => {
+  const result = await callTool(token, 'get_ticket', { id });
+  expect(result.isError).toBeUndefined();
+  return JSON.parse(result.content[0]?.text ?? '') as Ticket;
+};
+
+const subOf = (token: string): string => {
+  const { sub } = decodeJwt(token);
+  if (sub === undefined) throw new Error('token has no sub');
+  return sub;
+};
+
+// The in-memory store lives as long as the itsm-mcp container, so a test that mutates must prove
+// a NEW mutation: it reads the ticket before, acts, and reads it back, so it cannot pass on state
+// left by an earlier run. Closing is irreversible, hence the pool below: each run closes the first
+// ticket that is still open, and fails loudly once the pool is used up (recreate the stack with
+// `docker compose down -v && docker compose up -d --wait`). INC-0003 (comments) and INC-0004
+// (refused close) are never in the pool.
+const CLOSE_POOL = ['INC-0002', 'INC-0001', 'INC-0005'];
 describe('authorization against Keycloak and the containerised MCP server', () => {
   it('alice with read scope: search works, close is not listed', async () => {
     const token = await getToken('alice', ['itsm:read']);
@@ -49,7 +71,7 @@ describe('authorization against Keycloak and the containerised MCP server', () =
     expect(JSON.parse(found.content[0]?.text ?? '')).toHaveLength(5);
   });
 
-  it('alice with all itsm scopes can close INC-0002', async () => {
+  it('alice with all itsm scopes can close a ticket that was open', async () => {
     const token = await getToken('alice', ['itsm:read', 'itsm:write', 'itsm:close']);
     expect(await toolNames(token)).toEqual([
       'search_tickets',
@@ -57,10 +79,22 @@ describe('authorization against Keycloak and the containerised MCP server', () =
       'add_comment',
       'close_ticket',
     ]);
-    const closed = await callTool(token, 'close_ticket', { id: 'INC-0002' });
+    const before = await Promise.all(CLOSE_POOL.map((id) => getTicket(token, id)));
+    const target = before.find((t) => t.status === 'open');
+    if (target === undefined) {
+      throw new Error(
+        `every ticket in ${CLOSE_POOL.join(', ')} is already closed by earlier runs; ` +
+          'recreate the stack: docker compose down -v && docker compose up -d --wait',
+      );
+    }
+
+    const closed = await callTool(token, 'close_ticket', { id: target.id });
     expect(closed.isError).toBeUndefined();
-    const ticket = await callTool(token, 'get_ticket', { id: 'INC-0002' });
-    expect(JSON.parse(ticket.content[0]?.text ?? '')).toMatchObject({ status: 'closed' });
+
+    const after = await getTicket(token, target.id);
+    expect(after.status).toBe('closed');
+    expect(after.comments).toHaveLength(target.comments.length + 1);
+    expect(after.comments.at(-1)).toEqual({ author: subOf(token), text: 'closed' });
   });
 
   it('bob requesting all itsm scopes still gets read tools only', async () => {
@@ -75,12 +109,19 @@ describe('authorization against Keycloak and the containerised MCP server', () =
   it('alice with read+write can comment on INC-0003 but not close it', async () => {
     const token = await getToken('alice', ['itsm:read', 'itsm:write']);
     expect(await toolNames(token)).toEqual(['search_tickets', 'get_ticket', 'add_comment']);
-    const commented = await callTool(token, 'add_comment', { id: 'INC-0003', text: 'looking' });
+    const before = await getTicket(token, 'INC-0003');
+
+    const text = `e2e comment ${randomUUID()}`;
+    const commented = await callTool(token, 'add_comment', { id: 'INC-0003', text });
     expect(commented.isError).toBeUndefined();
+
+    const after = await getTicket(token, 'INC-0003');
+    expect(after.comments).toHaveLength(before.comments.length + 1);
+    expect(after.comments.at(-1)).toEqual({ author: subOf(token), text });
+
     const refused = await callTool(token, 'close_ticket', { id: 'INC-0003' });
     expect(refused.isError).toBe(true);
-    const ticket = await callTool(token, 'get_ticket', { id: 'INC-0003' });
-    expect(JSON.parse(ticket.content[0]?.text ?? '')).toMatchObject({ status: 'open' });
+    expect((await getTicket(token, 'INC-0003')).status).toBe('open');
   });
 
   it('token for other:read (aud localhost:3001) is rejected with 401', async () => {

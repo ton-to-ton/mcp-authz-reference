@@ -39,8 +39,21 @@ const jsonRpcError = (code: number, message: string) => ({
   id: null,
 });
 
-const isBadRequestBody = (err: unknown): boolean =>
-  typeof err === 'object' && err !== null && 'status' in err && err.status === 400;
+// body-parser reports its failures as http-errors with a 4xx status and `expose: true`.
+const bodyParserStatus = (err: unknown): number | undefined => {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const { status, expose } = err as { status?: unknown; expose?: unknown };
+  return expose === true && typeof status === 'number' && status >= 400 && status < 500
+    ? status
+    : undefined;
+};
+
+// Fixed text per status: the library's own message is never sent to the client.
+const bodyErrorResponse = (status: number): ReturnType<typeof jsonRpcError> => {
+  if (status === 400) return jsonRpcError(-32700, 'Parse error');
+  if (status === 413) return jsonRpcError(-32600, 'Payload too large');
+  return jsonRpcError(-32600, 'Invalid request');
+};
 
 export function createApp(deps: AppDeps): express.Express {
   const { config, verifier, store, log = stdoutLine } = deps;
@@ -116,8 +129,9 @@ export function createApp(deps: AppDeps): express.Express {
       next(err);
       return;
     }
-    if (isBadRequestBody(err)) {
-      res.status(400).json(jsonRpcError(-32700, 'Parse error'));
+    const status = bodyParserStatus(err);
+    if (status !== undefined) {
+      res.status(status).json(bodyErrorResponse(status));
       return;
     }
     process.stderr.write(`unhandled error: ${err instanceof Error ? err.stack : String(err)}\n`);

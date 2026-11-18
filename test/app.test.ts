@@ -1,7 +1,7 @@
-import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
+import { createLocalJWKSet, errors, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import type { CryptoKey, JWK } from 'jose';
 import request from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Express } from 'express';
 import { createApp } from '../src/app.js';
 import { createVerifier } from '../src/auth/verify.js';
@@ -150,6 +150,61 @@ describe('HTTP app', () => {
     expect(res.status).toBe(401);
   });
 
+  // Claim-shape failures once put multiline zod text into WWW-Authenticate, which Node rejects (500).
+  it.each([
+    ['missing azp', { azp: undefined }],
+    ['roles as a string', { roles: 'itsm-operator' }],
+  ])(
+    '401 with WWW-Authenticate for a correctly signed token with %s, store unchanged',
+    async (_name, claims) => {
+      const token = await sign({
+        scope: 'itsm:read itsm:write itsm:close',
+        roles: ['itsm-operator'],
+        ...claims,
+      });
+      const res = await post(token, callRequest('close_ticket', { id: 'INC-0001' }));
+      expect(res.status).toBe(401);
+      expect(res.headers['www-authenticate']).toContain('error="invalid_token"');
+      expect(res.headers['www-authenticate']).toContain('resource_metadata=');
+      expect(store.get('INC-0001')?.status).toBe('open');
+    },
+  );
+
+  describe('when the JWKS endpoint is down', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('answers 500 without details, not 401, and does not change the store', async () => {
+      const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+      const brokenApp = createApp({
+        config,
+        verifier: createVerifier({
+          issuer: ISSUER,
+          resource: config.resource,
+          jwks: () => Promise.reject(new errors.JOSEError('Expected 200 OK from keycloak:8080')),
+        }),
+        store,
+        log: (line) => logLines.push(line),
+      });
+      const token = await sign({
+        scope: 'itsm:read itsm:write itsm:close',
+        roles: ['itsm-operator'],
+      });
+      const res = await request(brokenApp)
+        .post('/mcp')
+        .set('Accept', 'application/json, text/event-stream')
+        .set('Authorization', `Bearer ${token}`)
+        .send(callRequest('close_ticket', { id: 'INC-0001' }));
+      expect(res.status).toBe(500);
+      expect(res.headers['www-authenticate']).toBeUndefined();
+      expect(res.text).not.toContain('keycloak');
+      expect(res.text).not.toContain('Expected 200 OK');
+      expect(store.get('INC-0001')?.status).toBe('open');
+      expect(stderr.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain(
+        'Expected 200 OK',
+      );
+    });
+  });
+
   it('accepts a token whose aud array contains the resource', async () => {
     const res = await post(await sign({ aud: ['account', RESOURCE] }), initRequest);
     expect(res.status).toBe(200);
@@ -217,6 +272,31 @@ describe('HTTP app', () => {
       .send('{not json');
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe(-32700);
+  });
+
+  it('answers an oversized body with a 413 JSON-RPC error and no details', async () => {
+    const res = await post(await viewerToken(), {
+      ...initRequest,
+      params: { ...initRequest.params, padding: 'x'.repeat(200_000) },
+    });
+    expect(res.status).toBe(413);
+    expect(res.body).toEqual({
+      jsonrpc: '2.0',
+      error: { code: -32600, message: 'Payload too large' },
+      id: null,
+    });
+    expect(logLines).toEqual([]);
+  });
+
+  it('answers an unsupported charset with 415, not 500', async () => {
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${await viewerToken()}`)
+      .set('Accept', 'application/json, text/event-stream')
+      .set('Content-Type', 'application/json; charset=x-bogus')
+      .send('{}');
+    expect(res.status).toBe(415);
+    expect(res.body.error.code).toBe(-32600);
   });
 
   describe('request log', () => {

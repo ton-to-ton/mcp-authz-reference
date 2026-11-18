@@ -15,7 +15,7 @@ services:
     volumes:
       - ./keycloak/itsm-lab-realm.json:/opt/keycloak/data/import/itsm-lab-realm.json:ro
     ports:
-      - '8080:8080'
+      - '127.0.0.1:8080:8080'
     healthcheck:
       # The image has no curl; speak HTTP to the management port (9000) with bash's /dev/tcp.
       test:
@@ -40,7 +40,7 @@ services:
       # Inside the compose network Keycloak is keycloak:8080; the issuer above is what tokens carry.
       JWKS_URI: http://keycloak:8080/realms/itsm-lab/protocol/openid-connect/certs
     ports:
-      - '3000:3000'
+      - '127.0.0.1:3000:3000'
     healthcheck:
       test:
         - CMD
