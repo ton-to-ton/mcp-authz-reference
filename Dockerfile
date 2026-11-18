@@ -1,9 +1,4 @@
-FROM node:24-slim AS base
-# package-lock.json was written by npm 11.6.2; the npm bundled with newer node:24 images (11.19)
-# rejects it in `npm ci` (optional @emnapi peers missing). Pin npm until the lockfile is regenerated.
-RUN npm install -g npm@11.6.2
-
-FROM base AS build
+FROM node:24-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -11,7 +6,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-FROM base
+FROM node:24-slim
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json ./
