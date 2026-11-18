@@ -1,0 +1,9 @@
+# Verification-only override (docs/verification/2026-11-18-resource-indicators.md).
+# Same Keycloak image as the flag-off run, pinned by digest, with RFC 8707 Resource Indicators on.
+#   docker compose -f compose.yaml -f compose.resource-indicators.yaml up -d --wait
+#   ./keycloak/setup-resource-indicators.sh
+# The flag-off run is plain compose.yaml: its 26.8.2 tag resolved to this same digest on 2026-11-18.
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0
+    command: start-dev --import-realm --features=resource-indicators
