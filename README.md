@@ -86,10 +86,16 @@ Test users: `alice` has the operator role, `bob` has the viewer role. The policy
 
 ## Verified on
 
-| Date       | What                                          | Keycloak | MCP SDK | Node | Result                                      |
-| ---------- | --------------------------------------------- | -------- | ------- | ---- | ------------------------------------------- |
-| 2026-11-18 | Unit tests and e2e tests (`npm run test:e2e`) | 26.8.2   | 1.32.2  | 24   | Passed                                      |
-| TODO       | Claude Code manual walkthrough                | 26.8.2   | 1.32.2  | 24   | Pending (the Claude Code version goes here) |
+| Date       | What                                          | Keycloak | MCP SDK | Node | Result             |
+| ---------- | --------------------------------------------- | -------- | ------- | ---- | ------------------ |
+| 2026-11-18 | Unit tests and e2e tests (`npm run test:e2e`) | 26.8.2   | 1.32.2  | 24   | Passed             |
+| 2026-11-18 | Claude Code 2.1.327 manual walkthrough        | 26.8.2   | 1.32.2  | 24   | Passed (see below) |
+
+Claude Code walkthrough (2026-11-18): with the pre-registered `claude-code` client and `oauth.scopes`
+set per entry, alice saw 2 tools (`itsm:read`) and 4 tools (all scopes); bob saw 2 tools with both.
+The server log confirmed `azp` = `claude-code` and that the granted scopes followed each entry's
+setting. Two observations: Claude Code also requested `offline_access` (a refresh token), and it
+first sent `server/discover` (a 2026-07-28 method) before falling back to `initialize`.
 
 More: [docs/claude-code.md](docs/claude-code.md) ·
 [resource indicators verification memo](docs/verification/2026-11-18-resource-indicators.md)
